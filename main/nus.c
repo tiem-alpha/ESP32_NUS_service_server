@@ -345,8 +345,8 @@ static void nus_handle_rx_data(const uint8_t *data, uint16_t len)
     memcpy(s_rx_value, data, copy_len);
     s_rx_char_val.attr_len = copy_len;
     nus_reset_idle_timeout();
-    ESP_LOGI(NUS_TAG, "RX %u bytes", copy_len);
-    ESP_LOG_BUFFER_HEX(NUS_TAG, s_rx_value, copy_len);
+    // ESP_LOGI(NUS_TAG, "RX %u bytes", copy_len);
+    // ESP_LOG_BUFFER_HEX(NUS_TAG, s_rx_value, copy_len);
 
     if (s_nus.rx_cb) {
         s_nus.rx_cb(s_rx_value, copy_len);

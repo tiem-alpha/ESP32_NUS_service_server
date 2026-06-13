@@ -262,14 +262,13 @@ ACK payload co 1 byte status:
 
 | CMD | Type tu mobile | Payload | Device reply |
 | --- | -------------- | ------- | ------------ |
-| `NAV_INSTRUCTION(0x01)` | `EVENT` | `u8 len + direction`, `u8 len + distance`, `u8 len + next_direction`, `u8 len + destination_distance`, `u8 len + remaining_time`, `u16 current_speed` | `ACK` |
+| `NAV_INSTRUCTION(0x01)` | `EVENT` | `u8 len + direction (string)`, `u8 len + distance (u32 LE, m)`, `u8 len + next_direction (string)`, `u8 len + destination_distance (u32 LE, m)`, `u8 len + remaining_time (u32 LE, minutes)`, `u16 current_speed (m/s)`, `u8 len + current_time (u32 LE epoch_seconds)` | `ACK` |
 | `NAV_IMAGE(0x02)` | `EVENT` | `u8 image_type`, `u16 width`, `u16 height`, `u16 data_len`, `data` | `ACK` |
-| `TRAFFIC_SIGN(0x03)` | `EVENT` | `u8 sign_type`, `u16 data_len`, `data` | `ACK` |
-| `DEVICE_INFO(0x04)` | `REQUEST` | empty | `RESPONSE` with 6 text fields: hardware, firmware, manufacturer, serial, product, model |
-| `CURRENT_TIME(0x05)` | `EVENT` | `u32` or `u64 epoch_seconds` little-endian | `ACK` |
+| `TRAFFIC_SIGN(0x03)` | `EVENT` | `u8 sign_type`, `u16 data_len`, `data`(string) | `ACK` |
+| `DEVICE_INFO(0x04)` | `REQUEST` | empty | `RESPONSE` with 6 text fields: hardware(uint32_t), firmware (uint32_t), manufacturer id (16bytes), serial(32 bytes), product(uint32_t ), model(uint32_t) |
+| `CURRENT_TIME(0x05)` | `EVENT` | `u32` epoch_seconds` little-endian | `ACK` |
 | `FILE_TRANSFER(0x06)` | `COMMAND` | `u32 file_size`, `u32 offset`, `u16 data_len`, `data` | `ACK` |
 | `OTA(0x07)` | `REQUEST`/`EVENT`/`COMMAND` | raw, TBD | callback returns status, then `ACK` |
-
 ### Protocol API
 
 Khoi tao dispatcher:

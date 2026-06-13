@@ -78,18 +78,16 @@ static nus_proto_status_t app_proto_nav_instruction_cb(const nus_proto_nav_instr
 {
     (void)user_ctx;
     ESP_LOGI(APP_TAG,
-             "NAV dir=%.*s dist=%.*s next=%.*s dest=%.*s remain=%.*s speed=%u",
+             "NAV dir=%.*s dist=%" PRIu32 "m next=%.*s dest=%" PRIu32 "m remain=%" PRIu32 "min speed=%um/s time=%" PRIu32,
              (int)message->direction.len,
              message->direction.data,
-             (int)message->distance.len,
-             message->distance.data,
+             message->distance_m,
              (int)message->next_direction.len,
              message->next_direction.data,
-             (int)message->destination_distance.len,
-             message->destination_distance.data,
-             (int)message->remaining_time.len,
-             message->remaining_time.data,
-             message->current_speed);
+             message->destination_distance_m,
+             message->remaining_time_minutes,
+             message->current_speed_mps,
+             message->current_time_epoch_seconds);
     return NUS_PROTO_STATUS_OK;
 }
 
@@ -122,12 +120,12 @@ static nus_proto_status_t app_proto_device_info_cb(nus_proto_device_info_t *resp
 {
     (void)user_ctx;
     *response = (nus_proto_device_info_t) {
-        .hardware_version = NUS_PROTO_TEXT_LITERAL("ESP32-H2"),
-        .firmware_version = NUS_PROTO_TEXT_LITERAL("1.0.0"),
-        .manufacturer = NUS_PROTO_TEXT_LITERAL("Tiem"),
-        .serial_number = NUS_PROTO_TEXT_LITERAL("SN000001"),
-        .product_id = NUS_PROTO_TEXT_LITERAL("NUS-DISPLAY"),
-        .model_id = NUS_PROTO_TEXT_LITERAL("NUS-001"),
+        .hardware_version = 0x00000001,
+        .firmware_version = 0x00010000,
+        .manufacturer_id = "TIEM",
+        .serial_number = "SN000001",
+        .product_id = 0x00000001,
+        .model_id = 0x00000001,
     };
     return NUS_PROTO_STATUS_OK;
 }
@@ -136,7 +134,7 @@ static nus_proto_status_t app_proto_current_time_cb(const nus_proto_current_time
                                                     void *user_ctx)
 {
     (void)user_ctx;
-    ESP_LOGI(APP_TAG, "Current time epoch=%" PRIu64, message->epoch_seconds);
+    ESP_LOGI(APP_TAG, "Current time epoch=%" PRIu32, message->epoch_seconds);
     return NUS_PROTO_STATUS_OK;
 }
 
@@ -173,7 +171,7 @@ static nus_proto_status_t app_proto_unknown_cb(const nus_proto_frame_t *frame, v
 static void app_nus_rx_cb(const uint8_t *data, uint16_t len)
 {
     ESP_LOGI(APP_TAG, "NUS received %u bytes", len);
-    ESP_LOG_BUFFER_HEX(APP_TAG, data, len);
+    // ESP_LOG_BUFFER_HEX(APP_TAG, data, len);
 
     esp_err_t err = nus_protocol_input(&s_protocol, data, len);
     if (err != ESP_OK) {

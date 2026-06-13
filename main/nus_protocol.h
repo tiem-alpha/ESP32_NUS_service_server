@@ -23,6 +23,9 @@ extern "C" {
 #define NUS_PROTOCOL_FRAME_OVERHEAD (NUS_PROTOCOL_HEADER_LEN + NUS_PROTOCOL_CRC_LEN)
 #define NUS_PROTOCOL_MAX_FRAME_LEN NUS_MAX_DATA_LEN
 #define NUS_PROTOCOL_MAX_PAYLOAD_LEN (NUS_PROTOCOL_MAX_FRAME_LEN - NUS_PROTOCOL_FRAME_OVERHEAD)
+#define NUS_PROTO_MANUFACTURER_ID_LEN 16
+#define NUS_PROTO_SERIAL_NUMBER_LEN 32
+#define NUS_PROTO_DEVICE_INFO_PAYLOAD_LEN 64
 
 #define NUS_PROTO_TEXT_LITERAL(text_literal) { \
     .data = (text_literal), \
@@ -80,11 +83,12 @@ typedef struct {
 
 typedef struct {
     nus_proto_text_t direction;
-    nus_proto_text_t distance;
+    uint32_t distance_m;
     nus_proto_text_t next_direction;
-    nus_proto_text_t destination_distance;
-    nus_proto_text_t remaining_time;
-    uint16_t current_speed;
+    uint32_t destination_distance_m;
+    uint32_t remaining_time_minutes;
+    uint16_t current_speed_mps;
+    uint32_t current_time_epoch_seconds;
 } nus_proto_nav_instruction_t;
 
 typedef struct {
@@ -102,16 +106,16 @@ typedef struct {
 } nus_proto_traffic_sign_t;
 
 typedef struct {
-    nus_proto_text_t hardware_version;
-    nus_proto_text_t firmware_version;
-    nus_proto_text_t manufacturer;
-    nus_proto_text_t serial_number;
-    nus_proto_text_t product_id;
-    nus_proto_text_t model_id;
+    uint32_t hardware_version;
+    uint32_t firmware_version;
+    uint8_t manufacturer_id[NUS_PROTO_MANUFACTURER_ID_LEN];
+    uint8_t serial_number[NUS_PROTO_SERIAL_NUMBER_LEN];
+    uint32_t product_id;
+    uint32_t model_id;
 } nus_proto_device_info_t;
 
 typedef struct {
-    uint64_t epoch_seconds;
+    uint32_t epoch_seconds;
 } nus_proto_current_time_t;
 
 typedef struct {
@@ -234,6 +238,9 @@ esp_err_t nus_protocol_parse_nav_image_payload(const uint8_t *payload,
 esp_err_t nus_protocol_parse_traffic_sign_payload(const uint8_t *payload,
                                                   uint16_t payload_len,
                                                   nus_proto_traffic_sign_t *out);
+esp_err_t nus_protocol_parse_device_info_payload(const uint8_t *payload,
+                                                 uint16_t payload_len,
+                                                 nus_proto_device_info_t *out);
 esp_err_t nus_protocol_parse_current_time_payload(const uint8_t *payload,
                                                   uint16_t payload_len,
                                                   nus_proto_current_time_t *out);

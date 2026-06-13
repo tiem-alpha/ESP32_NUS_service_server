@@ -100,15 +100,6 @@ static uint32_t nus_proto_read_u32_le(const uint8_t *data)
            ((uint32_t)data[3] << 24);
 }
 
-static uint64_t nus_proto_read_u64_le(const uint8_t *data)
-{
-    uint64_t value = 0;
-    for (uint8_t i = 0; i < 8; i++) {
-        value |= ((uint64_t)data[i]) << (8 * i);
-    }
-    return value;
-}
-
 static void nus_proto_write_u16_le(uint8_t *data, uint16_t value)
 {
     data[0] = (uint8_t)(value & 0xFF);
@@ -121,13 +112,6 @@ static void nus_proto_write_u32_le(uint8_t *data, uint32_t value)
     data[1] = (uint8_t)((value >> 8) & 0xFF);
     data[2] = (uint8_t)((value >> 16) & 0xFF);
     data[3] = (uint8_t)((value >> 24) & 0xFF);
-}
-
-static void nus_proto_write_u64_le(uint8_t *data, uint64_t value)
-{
-    for (uint8_t i = 0; i < 8; i++) {
-        data[i] = (uint8_t)((value >> (8 * i)) & 0xFF);
-    }
 }
 
 static esp_err_t nus_proto_read_text(const uint8_t *payload,
@@ -149,6 +133,28 @@ static esp_err_t nus_proto_read_text(const uint8_t *payload,
     out->data = (const char *)&payload[*offset];
     out->len = text_len;
     *offset += text_len;
+    return ESP_OK;
+}
+
+static esp_err_t nus_proto_read_len_prefixed_u32(const uint8_t *payload,
+                                                 uint16_t payload_len,
+                                                 uint16_t *offset,
+                                                 uint32_t *out)
+{
+    if (payload == NULL || offset == NULL || out == NULL || *offset >= payload_len) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint8_t value_len = payload[*offset];
+    (*offset)++;
+
+    if (value_len != (uint8_t)sizeof(uint32_t) ||
+        (uint16_t)(payload_len - *offset) < value_len) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    *out = nus_proto_read_u32_le(&payload[*offset]);
+    *offset += value_len;
     return ESP_OK;
 }
 
@@ -176,6 +182,26 @@ static esp_err_t nus_proto_write_text(uint8_t *out,
         memcpy(&out[*offset], text->data, text->len);
         *offset += text->len;
     }
+    return ESP_OK;
+}
+
+static esp_err_t nus_proto_write_len_prefixed_u32(uint8_t *out,
+                                                  uint16_t out_size,
+                                                  uint16_t *offset,
+                                                  uint32_t value)
+{
+    if (out == NULL || offset == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (*offset > out_size ||
+        (uint16_t)(out_size - *offset) < (uint16_t)(1 + sizeof(uint32_t))) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    out[*offset] = (uint8_t)sizeof(uint32_t);
+    (*offset)++;
+    nus_proto_write_u32_le(&out[*offset], value);
+    *offset += sizeof(uint32_t);
     return ESP_OK;
 }
 
@@ -675,7 +701,7 @@ esp_err_t nus_protocol_parse_nav_instruction_payload(const uint8_t *payload,
     if (err != ESP_OK) {
         return err;
     }
-    err = nus_proto_read_text(payload, payload_len, &offset, &out->distance);
+    err = nus_proto_read_len_prefixed_u32(payload, payload_len, &offset, &out->distance_m);
     if (err != ESP_OK) {
         return err;
     }
@@ -683,20 +709,39 @@ esp_err_t nus_protocol_parse_nav_instruction_payload(const uint8_t *payload,
     if (err != ESP_OK) {
         return err;
     }
-    err = nus_proto_read_text(payload, payload_len, &offset, &out->destination_distance);
+    err = nus_proto_read_len_prefixed_u32(payload,
+                                          payload_len,
+                                          &offset,
+                                          &out->destination_distance_m);
     if (err != ESP_OK) {
         return err;
     }
-    err = nus_proto_read_text(payload, payload_len, &offset, &out->remaining_time);
+    err = nus_proto_read_len_prefixed_u32(payload,
+                                          payload_len,
+                                          &offset,
+                                          &out->remaining_time_minutes);
     if (err != ESP_OK) {
         return err;
     }
 
-    if ((uint16_t)(payload_len - offset) != sizeof(uint16_t)) {
+    if ((uint16_t)(payload_len - offset) < sizeof(uint16_t)) {
         return ESP_ERR_INVALID_SIZE;
     }
 
-    out->current_speed = nus_proto_read_u16_le(&payload[offset]);
+    out->current_speed_mps = nus_proto_read_u16_le(&payload[offset]);
+    offset += sizeof(uint16_t);
+
+    err = nus_proto_read_len_prefixed_u32(payload,
+                                          payload_len,
+                                          &offset,
+                                          &out->current_time_epoch_seconds);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (offset != payload_len) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
     return ESP_OK;
 }
 
@@ -744,6 +789,26 @@ esp_err_t nus_protocol_parse_traffic_sign_payload(const uint8_t *payload,
     return ESP_OK;
 }
 
+esp_err_t nus_protocol_parse_device_info_payload(const uint8_t *payload,
+                                                 uint16_t payload_len,
+                                                 nus_proto_device_info_t *out)
+{
+    if (payload == NULL || out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (payload_len != NUS_PROTO_DEVICE_INFO_PAYLOAD_LEN) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    out->hardware_version = nus_proto_read_u32_le(&payload[0]);
+    out->firmware_version = nus_proto_read_u32_le(&payload[4]);
+    memcpy(out->manufacturer_id, &payload[8], NUS_PROTO_MANUFACTURER_ID_LEN);
+    memcpy(out->serial_number, &payload[24], NUS_PROTO_SERIAL_NUMBER_LEN);
+    out->product_id = nus_proto_read_u32_le(&payload[56]);
+    out->model_id = nus_proto_read_u32_le(&payload[60]);
+    return ESP_OK;
+}
+
 esp_err_t nus_protocol_parse_current_time_payload(const uint8_t *payload,
                                                   uint16_t payload_len,
                                                   nus_proto_current_time_t *out)
@@ -753,10 +818,6 @@ esp_err_t nus_protocol_parse_current_time_payload(const uint8_t *payload,
     }
     if (payload_len == sizeof(uint32_t)) {
         out->epoch_seconds = nus_proto_read_u32_le(payload);
-        return ESP_OK;
-    }
-    if (payload_len == sizeof(uint64_t)) {
-        out->epoch_seconds = nus_proto_read_u64_le(payload);
         return ESP_OK;
     }
     return ESP_ERR_INVALID_SIZE;
@@ -798,7 +859,7 @@ esp_err_t nus_protocol_pack_nav_instruction_payload(const nus_proto_nav_instruct
     if (err != ESP_OK) {
         return err;
     }
-    err = nus_proto_write_text(out, out_size, &offset, &message->distance);
+    err = nus_proto_write_len_prefixed_u32(out, out_size, &offset, message->distance_m);
     if (err != ESP_OK) {
         return err;
     }
@@ -806,11 +867,17 @@ esp_err_t nus_protocol_pack_nav_instruction_payload(const nus_proto_nav_instruct
     if (err != ESP_OK) {
         return err;
     }
-    err = nus_proto_write_text(out, out_size, &offset, &message->destination_distance);
+    err = nus_proto_write_len_prefixed_u32(out,
+                                           out_size,
+                                           &offset,
+                                           message->destination_distance_m);
     if (err != ESP_OK) {
         return err;
     }
-    err = nus_proto_write_text(out, out_size, &offset, &message->remaining_time);
+    err = nus_proto_write_len_prefixed_u32(out,
+                                           out_size,
+                                           &offset,
+                                           message->remaining_time_minutes);
     if (err != ESP_OK) {
         return err;
     }
@@ -819,8 +886,17 @@ esp_err_t nus_protocol_pack_nav_instruction_payload(const nus_proto_nav_instruct
         return ESP_ERR_INVALID_SIZE;
     }
 
-    nus_proto_write_u16_le(&out[offset], message->current_speed);
+    nus_proto_write_u16_le(&out[offset], message->current_speed_mps);
     offset += sizeof(uint16_t);
+
+    err = nus_proto_write_len_prefixed_u32(out,
+                                           out_size,
+                                           &offset,
+                                           message->current_time_epoch_seconds);
+    if (err != ESP_OK) {
+        return err;
+    }
+
     *written = offset;
     return ESP_OK;
 }
@@ -883,34 +959,18 @@ esp_err_t nus_protocol_pack_device_info_payload(const nus_proto_device_info_t *i
     if (info == NULL || out == NULL || written == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-
-    uint16_t offset = 0;
-    esp_err_t err = nus_proto_write_text(out, out_size, &offset, &info->hardware_version);
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = nus_proto_write_text(out, out_size, &offset, &info->firmware_version);
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = nus_proto_write_text(out, out_size, &offset, &info->manufacturer);
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = nus_proto_write_text(out, out_size, &offset, &info->serial_number);
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = nus_proto_write_text(out, out_size, &offset, &info->product_id);
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = nus_proto_write_text(out, out_size, &offset, &info->model_id);
-    if (err != ESP_OK) {
-        return err;
+    if (out_size < NUS_PROTO_DEVICE_INFO_PAYLOAD_LEN) {
+        return ESP_ERR_INVALID_SIZE;
     }
 
-    *written = offset;
+    nus_proto_write_u32_le(&out[0], info->hardware_version);
+    nus_proto_write_u32_le(&out[4], info->firmware_version);
+    memcpy(&out[8], info->manufacturer_id, NUS_PROTO_MANUFACTURER_ID_LEN);
+    memcpy(&out[24], info->serial_number, NUS_PROTO_SERIAL_NUMBER_LEN);
+    nus_proto_write_u32_le(&out[56], info->product_id);
+    nus_proto_write_u32_le(&out[60], info->model_id);
+
+    *written = NUS_PROTO_DEVICE_INFO_PAYLOAD_LEN;
     return ESP_OK;
 }
 
@@ -922,12 +982,12 @@ esp_err_t nus_protocol_pack_current_time_payload(const nus_proto_current_time_t 
     if (message == NULL || out == NULL || written == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (out_size < sizeof(uint64_t)) {
+    if (out_size < sizeof(uint32_t)) {
         return ESP_ERR_INVALID_SIZE;
     }
 
-    nus_proto_write_u64_le(out, message->epoch_seconds);
-    *written = sizeof(uint64_t);
+    nus_proto_write_u32_le(out, message->epoch_seconds);
+    *written = sizeof(uint32_t);
     return ESP_OK;
 }
 
