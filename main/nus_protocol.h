@@ -48,6 +48,7 @@ typedef enum {
     NUS_PROTO_CMD_CURRENT_TIME = 0x05,
     NUS_PROTO_CMD_FILE_TRANSFER = 0x06,
     NUS_PROTO_CMD_OTA = 0x07,
+    NUS_PROTO_CMD_MAP_LINES = 0x08,
 } nus_proto_cmd_t;
 
 typedef enum {
@@ -89,7 +90,22 @@ typedef struct {
     uint32_t remaining_time_minutes;
     uint16_t current_speed_mps;
     uint32_t current_time_epoch_seconds;
+    uint16_t route_progress_permille; /* 0=unknown; 1-1000 = 0.1%-100.0%; optional trailing field */
 } nus_proto_nav_instruction_t;
+
+#define NUS_PROTO_MAP_LINE_MAX_POINTS 60
+#define NUS_PROTO_MAP_MAX_LINES 15
+
+typedef struct {
+    uint8_t line_type;    /* 0x01=route chính, 0x02=đường xung quanh, 0x03=đã đi */
+    uint8_t point_count;
+    const uint8_t *points; /* x0,y0,x1,y1,... — trỏ vào RX buffer, chỉ valid trong callback */
+} nus_proto_map_line_t;
+
+typedef struct {
+    uint8_t line_count;
+    nus_proto_map_line_t lines[NUS_PROTO_MAP_MAX_LINES];
+} nus_proto_map_lines_t;
 
 typedef struct {
     uint8_t image_type;
@@ -159,6 +175,8 @@ typedef nus_proto_status_t (*nus_proto_file_transfer_cb_t)(const nus_proto_file_
                                                            void *user_ctx);
 typedef nus_proto_status_t (*nus_proto_ota_cb_t)(const nus_proto_frame_t *frame,
                                                  void *user_ctx);
+typedef nus_proto_status_t (*nus_proto_map_lines_cb_t)(const nus_proto_map_lines_t *message,
+                                                       void *user_ctx);
 typedef nus_proto_status_t (*nus_proto_unknown_cb_t)(const nus_proto_frame_t *frame,
                                                      void *user_ctx);
 
@@ -176,6 +194,7 @@ typedef struct {
     nus_proto_current_time_cb_t on_current_time;
     nus_proto_file_transfer_cb_t on_file_transfer;
     nus_proto_ota_cb_t on_ota;
+    nus_proto_map_lines_cb_t on_map_lines;
     nus_proto_unknown_cb_t on_unknown;
 } nus_protocol_callbacks_t;
 
@@ -247,6 +266,9 @@ esp_err_t nus_protocol_parse_current_time_payload(const uint8_t *payload,
 esp_err_t nus_protocol_parse_file_transfer_payload(const uint8_t *payload,
                                                    uint16_t payload_len,
                                                    nus_proto_file_transfer_t *out);
+esp_err_t nus_protocol_parse_map_lines_payload(const uint8_t *payload,
+                                               uint16_t payload_len,
+                                               nus_proto_map_lines_t *out);
 
 esp_err_t nus_protocol_pack_nav_instruction_payload(const nus_proto_nav_instruction_t *message,
                                                     uint8_t *out,

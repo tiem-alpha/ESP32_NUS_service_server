@@ -260,15 +260,249 @@ ACK payload co 1 byte status:
 
 ### Commands
 
-| CMD | Type tu mobile | Payload | Device reply |
-| --- | -------------- | ------- | ------------ |
-| `NAV_INSTRUCTION(0x01)` | `EVENT` | `u8 len + direction (string)`, `u8 len + distance (u32 LE, m)`, `u8 len + next_direction (string)`, `u8 len + destination_distance (u32 LE, m)`, `u8 len + remaining_time (u32 LE, minutes)`, `u16 current_speed (m/s)`, `u8 len + current_time (u32 LE epoch_seconds)` | `ACK` |
-| `NAV_IMAGE(0x02)` | `EVENT` | `u8 image_type`, `u16 width`, `u16 height`, `u16 data_len`, `data` | `ACK` |
-| `TRAFFIC_SIGN(0x03)` | `EVENT` | `u8 sign_type`, `u16 data_len`, `data`(string) | `ACK` |
-| `DEVICE_INFO(0x04)` | `REQUEST` | empty | `RESPONSE` with 6 text fields: hardware(uint32_t), firmware (uint32_t), manufacturer id (16bytes), serial(32 bytes), product(uint32_t ), model(uint32_t) |
-| `CURRENT_TIME(0x05)` | `EVENT` | `u32` epoch_seconds` little-endian | `ACK` |
-| `FILE_TRANSFER(0x06)` | `COMMAND` | `u32 file_size`, `u32 offset`, `u16 data_len`, `data` | `ACK` |
-| `OTA(0x07)` | `REQUEST`/`EVENT`/`COMMAND` | raw, TBD | callback returns status, then `ACK` |
+| CMD | Type từ mobile | Payload | Reply |
+| --- | -------------- | ------- | ----- |
+| `NAV_INSTRUCTION_TEXT (0x01)` | `EVENT` | xem bên dưới | `ACK` |
+| `NAV_INSTRUCTION_IMAGE (0x02)` | `EVENT` | xem bên dưới | `ACK` |
+| `TRAFFIC_SIGN (0x03)` | `EVENT` | `u8 sign_type` · `u16 data_len` · `u8[] data` (string) | `ACK` |
+| `DEVICE_INFO (0x04)` | `REQUEST` | rỗng | `RESPONSE` xem bên dưới |
+| `CURRENT_TIME (0x05)` | `EVENT` | `u32 epoch_seconds` little-endian | `ACK` |
+| `FILE_TRANSFER (0x06)` | `COMMAND` | `u32 file_size` · `u32 offset` · `u16 data_len` · `u8[] data` | `ACK` |
+| `OTA (0x07)` | `REQUEST`/`EVENT`/`COMMAND` | raw, TBD | `ACK` |
+| `MAP_LINES (0x08)` | `EVENT` | xem phần [Viewport-clipped map lines](#viewport-clipped-map-lines--hud-map_lines) | `ACK` |
+
+---
+
+### NAV_INSTRUCTION_TEXT (0x01) — payload chi tiết
+
+Gửi mỗi khi maneuver thay đổi hoặc khoảng cách cập nhật đáng kể.
+Tất cả số nguyên là little-endian. Trường text là UTF-8, tối đa 64 byte, có thể
+strip dấu nếu firmware báo không hỗ trợ (qua `capBitmap` trong DEVICE_INFO).
+
+```
+u8       direction_len          // byte length của direction_text (0–64)
+u8[]     direction_text         // hướng rẽ hiện tại, vd "Rẽ trái"
+
+u8       4                      // luôn = 4 (length prefix cố định cho u32)
+u32      distance_to_maneuver_m // khoảng cách tới điểm rẽ (m)
+
+u8       next_len               // byte length của next_direction_text
+u8[]     next_direction_text    // hướng rẽ tiếp theo
+
+u8       4
+u32      destination_distance_m // tổng khoảng cách còn lại tới đích (m)
+
+u8       4
+u32      remaining_time_minutes // thời gian còn lại (phút)
+
+u16      current_speed_mps      // tốc độ hiện tại (m/s), KHÔNG có length prefix
+
+u8       4
+u32      epoch_seconds          // Unix time UTC tại thời điểm gửi
+```
+
+### NAV_INSTRUCTION_IMAGE (0x02) — payload chi tiết
+
+Gửi khi maneuver type thay đổi (coalesced, bỏ qua nếu type giống lần trước).
+Hiện tại fixed 24×24 px RGB565 (maneuver icon), firmware vẽ lên HUD.
+
+```
+u8       format      // 0x01=RGB565, 0x02=RGB888, 0x03=MONO1
+u16      width       // pixel, little-endian (hiện tại = 24)
+u16      height      // pixel, little-endian (hiện tại = 24)
+u16      data_len    // byte length của data
+u8[]     data        // raw pixel data theo format trên
+```
+
+Với RGB565 24×24: `data_len = 24 × 24 × 2 = 1152 byte` → gửi 5 BLE write
+chunk (MTU 247 byte).
+
+### DEVICE_INFO (0x04) — response payload
+
+```
+u32      hardware_version
+u32      firmware_version
+u8[16]   manufacturer_id    // ASCII, null-padded
+u8[32]   serial_number      // ASCII, null-padded
+u32      product_id
+u32      model_id           // dùng để tra HudDisplayConfig cho MAP_LINES
+```
+
+Tổng: 4+4+16+32+4+4 = **64 byte**.
+
+Mobile đọc `model_id` → tra bảng `_hudDisplayConfigs` → biết `map_w × map_h`
+để dùng cho projection trong `MAP_LINES`.
+
+## Viewport-clipped map lines → HUD (MAP_LINES)
+
+### Ý tưởng
+
+ESP32 display chỉ có một vùng nhỏ dành cho mini-map (hiện tại 240×180 px trong
+layout 240×320). Thay vì gửi ảnh bitmap (tốn bandwidth BLE), mobile gửi **dữ
+liệu vector** — danh sách tọa độ pixel của các đoạn line — để ESP32 tự vẽ.
+
+Mobile thực hiện toàn bộ phần nặng:
+1. Clip route geometry theo viewport camera hiện tại.
+2. Crop viewport về đúng tỉ lệ của ESP32 display (center-crop).
+3. Project lat/lng → pixel (u8 x, u8 y) trong không gian display.
+4. Đóng gói và gửi qua `MAP_LINES (0x08)`.
+
+ESP32 nhận list điểm → vẽ đường nối các điểm liên tiếp trong mỗi polyline.
+
+---
+
+### Device pairing — đọc model → suy ra kích thước display
+
+Ngay khi BLE pair thành công, mobile gửi `DEVICE_INFO(0x04) REQUEST`. ESP32
+trả về response chứa trường `model (uint32_t)`. Mobile tra bảng để biết:
+
+- Kích thước toàn bộ display (`screen_w × screen_h`)
+- Vùng dành riêng cho mini-map (`map_w × map_h`) — phần layout còn lại sau
+  khi firmware đã dùng cho speedometer, maneuver icon, v.v.
+
+```dart
+// Bảng model → display config (mở rộng khi thêm hardware mới)
+const _hudDisplayConfigs = {
+  0x0001: HudDisplayConfig(screenW: 240, screenH: 320, mapW: 240, mapH: 180),
+  0x0002: HudDisplayConfig(screenW: 320, screenH: 240, mapW: 200, mapH: 160),
+  // ...
+};
+
+void onDeviceInfoReceived(DeviceInfo info) {
+  final config = _hudDisplayConfigs[info.model]
+      ?? HudDisplayConfig(screenW: 240, screenH: 320, mapW: 240, mapH: 180); // fallback
+  _bleBridge?.setHudDisplayConfig(config);
+}
+```
+
+`HudDisplayConfig` được lưu trong `BleBridge` và dùng cho mọi lần tính crop
+ratio + pixel projection về sau. Không cần user config thủ công.
+
+---
+
+### Mobile side (Flutter)
+
+#### 1. Lấy viewport và center-crop theo tỉ lệ target
+
+```
+target_ratio = display_w / display_h   // ví dụ 240/180 = 4/3
+
+viewport = controller.getVisibleRegion()  // LatLngBounds (lat/lng)
+
+// Tính span hiện tại
+lng_span = east - west
+lat_span = north - south
+
+// Center-crop chiều dọc để khớp tỉ lệ
+lat_span_cropped = lng_span / target_ratio * (lat_per_lng_scale)
+// (scale do lat/lng không đều nhau — dùng cos(lat) để điều chỉnh)
+
+center_lat = (north + south) / 2
+north_crop = center_lat + lat_span_cropped / 2
+south_crop = center_lat - lat_span_cropped / 2
+```
+
+Kết quả: một `LatLngBounds` mới (west, south_crop, east, north_crop) có đúng
+tỉ lệ 4:3 (hoặc bất kỳ tỉ lệ nào của display target).
+
+#### 2. Clip route geometry vào cropped bounds
+
+Duyệt từng segment của `remaining` (và tuyến phụ), chỉ giữ điểm trong bounds
++ 1 điểm buffer ngoài mỗi đầu để line không bị cụt đột ngột tại viền màn hình.
+
+#### 3. Project lat/lng → pixel (u8)
+
+```
+x = round((lng - west)  / (east  - west)  * (display_w - 1))   // 0..display_w-1
+y = round((north - lat) / (north - south) * (display_h - 1))   // 0..display_h-1
+// y đảo chiều: north → y=0 (top), south → y=max (bottom)
+```
+
+`display_w=240` và `display_h=180` đều < 256 → dùng `u8` vừa đủ.
+Màn hình tương lai lớn hơn (ví dụ 320×240): vẫn dùng `u8` vì
+protocol normalize về không gian display, không phải pixel tuyệt đối.
+
+#### 4. Trigger gửi
+
+Gửi sau khi camera settle (debounce ~400 ms sau `_onCameraMove`) và sau mỗi
+lần route progress cập nhật đáng kể (> ~10 m). Không gửi nếu BLE chưa kết nối.
+
+---
+
+### Protocol — MAP_LINES (0x08)
+
+Frame wrapper giữ nguyên: `SOF | CMD | TYPE | LEN | PAYLOAD | CRC16/MCRF4XX`.
+
+**Payload:**
+
+```
+u8   line_count              // số polyline trong gói (thường 1–3)
+
+// Lặp lại line_count lần:
+u8   line_type               // 0x01=route chính còn lại, 0x02=tuyến phụ,
+                             // 0x03=đoạn đã đi (mờ)
+u8   point_count             // số điểm của polyline này
+u8[] points                  // point_count × 2 byte: x0,y0, x1,y1, ...
+```
+
+Ví dụ gói 1 polyline chính 8 điểm + 1 tuyến phụ 5 điểm:
+
+```
+01                           // line_count = 2  (sai ví dụ, sửa:)
+02
+  01  08  x0 y0 x1 y1 ... x7 y7    // route chính, 8 điểm
+  02  05  x0 y0 x1 y1 x2 y2 x3 y3 x4 y4  // tuyến phụ, 5 điểm
+```
+
+Tổng byte ví dụ: `1 + (1+1+16) + (1+1+10)` = **31 byte** — nhỏ hơn 1 MTU BLE.
+
+**Giới hạn:** `point_count` tối đa 60 điểm/polyline để payload luôn nằm trong
+1 BLE write chunk (247 byte MTU) với tối đa 3 polyline.
+
+---
+
+### ESP32 side (firmware)
+
+#### Parser
+
+Khi `CMD == 0x08`, đọc `line_count` rồi loop:
+
+```c
+void map_lines_handler(const uint8_t *payload, uint16_t len) {
+    uint16_t i = 0;
+    uint8_t line_count = payload[i++];
+
+    display_clear_map_region();  // xóa vùng mini-map trước khi vẽ lại
+
+    for (uint8_t l = 0; l < line_count; l++) {
+        uint8_t line_type   = payload[i++];
+        uint8_t point_count = payload[i++];
+
+        for (uint8_t p = 1; p < point_count; p++) {
+            uint8_t x0 = payload[i + (p-1)*2];
+            uint8_t y0 = payload[i + (p-1)*2 + 1];
+            uint8_t x1 = payload[i + p*2];
+            uint8_t y1 = payload[i + p*2 + 1];
+            display_draw_line(x0, y0, x1, y1, line_type);
+        }
+        i += point_count * 2;
+    }
+    ack_status(ACK_OK);
+}
+```
+
+#### Vẽ theo line_type
+
+| `line_type` | Style gợi ý |
+|-------------|-------------|
+| `0x01` route chính | nét đậm, màu primary (xanh) |
+| `0x02` tuyến phụ  | nét mảnh, màu xám / mờ |
+| `0x03` đã đi      | nét mảnh, màu xám đậm hơn |
+
+`display_draw_line` dùng Bresenham line algorithm (có sẵn trong hầu hết
+TFT driver như `ili9341`, `st7789`).
+
+---
 ### Protocol API
 
 Khoi tao dispatcher:
@@ -315,3 +549,50 @@ nus_protocol_send_frame(&s_protocol, cmd, NUS_PROTO_TYPE_EVENT, payload, payload
 De mo rong command moi, them enum CMD, payload parser/packer neu can, them entry
 vao `s_dispatch_table` trong `nus_protocol.c`, sau do them callback vao
 `nus_protocol_callbacks_t`.
+
+
+# Device information 
+  - FW version 2 bytes  uint16_t (major *10000 + minor *100 + build)
+  - harware version 2 bytes  uint16_t (major *10000 + minor *100 + build)
+  - manufacture id 2 bytes  uint16_t  (0xAAAA)
+  - product ID 2 bytes (0x0001)
+  - model ID 2 bytes (0x0001)
+  - serial number (32 bytes ASCII) ()
+  - Date 10 bytes (build time)
+  
+
+# Device config 
+ - day/ night mode 
+ - brightness
+ - TBD
+
+# model ID 
+## NUS 
+## es32
+## screens ST7789 240x320
+
+1. thư viện LVGL
+   
+2. layout 
+
+![Image_URL](Imgs/ui.svg)
+
+- khung topbar (W 240 x  H 59) vị trí x =0 , y =0 ; 
+	- ảnh rẽ hướng  (khung ảnh + ảnh 46x46) vị trí x =8 , y =2 . ảnh được gửi từ điện thoại 
+
+    - khoảng cách rẽ  cỡ 20 vị trí x =57 , y =4 ;
+	thôn tin bổ sung rẽ  text cỡ 12 , khung 136x40 , vị trí x = 104, y =8
+	-  process bar quãng đường đã đi W 214 x H 5 , vị trí x = 13 , y =50 
+- khung Main:  240x180 vị trí x = 0 ; y = 55 (topbar đè lên main 4 pixel)
+	- ảnh map chỉ đường được gửi từ điện thoại
+
+	
+
+- Bottom bar: 240x87, vị trí x = 0 , y = 233
+    - bảng tốc độ (ảnh (64x18) + text speed (size 24, vị trí 16, 250 (hiện ở center ảnh)) + text "Km/H" size 8, vị trí 25, 283)
+	- bảng hiển thị quãng đường còn lại và thười gian còn lại để đến đích (icon 28x28, vị trí 100, 235 + text quãng đường (size 13 vị trí 92,261 )+ text thời gian (size 10, vị trí 96, 278) ) 
+	- bảng cảnh báo ảnh ( khung viền 80x80, vị trí 155,236
+	cảnh báo text (size 10, 160x293), cảnh báo ảnh (48x48) 
+	- icon pin battery (18x18 vị trí 3 ,298) + icon connection (18x18, vị trí 23, 298) + giờ hiện tại (size 18 , vị trí 74 298) . icon được lưu trong flash 
+
+

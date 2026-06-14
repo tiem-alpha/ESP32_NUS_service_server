@@ -1,3 +1,50 @@
+menu "ST7789 Display Config"
+
+    config LCD_MOSI_GPIO
+        int "SPI MOSI GPIO"
+        default 5
+        help
+            GPIO cho MOSI (SPI data out → ST7789 DIN). Native SPI2: GPIO5 (FSPID).
+
+    config LCD_SCLK_GPIO
+        int "SPI SCLK GPIO"
+        default 4
+        help
+            GPIO cho SPI clock. Native SPI2: GPIO4 (FSPICLK).
+
+    config LCD_CS_GPIO
+        int "SPI CS GPIO"
+        default 1
+        help
+            GPIO cho chip select (active low). Native SPI2: GPIO1 (FSPICS0).
+
+    config LCD_DC_GPIO
+        int "Data/Command GPIO"
+        default 10
+        help
+            GPIO D/C: HIGH = data, LOW = command.
+
+    config LCD_RST_GPIO
+        int "Reset GPIO"
+        default 12
+        help
+            GPIO reset. Dùng -1 nếu nối trực tiếp VCC (no reset).
+
+    config LCD_BL_GPIO
+        int "Backlight GPIO"
+        default 22
+        help
+            GPIO bật đèn nền. Dùng -1 để bỏ qua (backlight luôn bật).
+
+    config LCD_SPI_CLOCK_MHZ
+        int "SPI clock (MHz)"
+        default 40
+        range 1 80
+        help
+            Tần số SPI clock, tối đa 80 MHz với ST7789.
+
+endmenu
+
 menu "Example 'GATT SERVER' Config"
     config EXAMPLE_CHAR_READ_DATA_LEN
         int "Length of characteristic value for Read Long support"

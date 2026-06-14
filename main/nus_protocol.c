@@ -37,6 +37,8 @@ static esp_err_t nus_proto_dispatch_file_transfer(nus_protocol_t *protocol,
                                                   const nus_proto_frame_t *frame);
 static esp_err_t nus_proto_dispatch_ota(nus_protocol_t *protocol,
                                         const nus_proto_frame_t *frame);
+static esp_err_t nus_proto_dispatch_map_lines(nus_protocol_t *protocol,
+                                              const nus_proto_frame_t *frame);
 
 static const nus_proto_dispatch_entry_t s_dispatch_table[] = {
     {
@@ -75,6 +77,11 @@ static const nus_proto_dispatch_entry_t s_dispatch_table[] = {
                      NUS_PROTO_TYPE_MASK(NUS_PROTO_TYPE_EVENT) |
                      NUS_PROTO_TYPE_MASK(NUS_PROTO_TYPE_COMMAND),
         .dispatch = nus_proto_dispatch_ota,
+    },
+    {
+        .cmd = NUS_PROTO_CMD_MAP_LINES,
+        .type_mask = NUS_PROTO_TYPE_MASK(NUS_PROTO_TYPE_EVENT),
+        .dispatch = nus_proto_dispatch_map_lines,
     },
 };
 
@@ -448,6 +455,26 @@ static esp_err_t nus_proto_dispatch_ota(nus_protocol_t *protocol,
     return nus_proto_auto_ack(protocol, frame, status);
 }
 
+static esp_err_t nus_proto_dispatch_map_lines(nus_protocol_t *protocol,
+                                              const nus_proto_frame_t *frame)
+{
+    nus_proto_map_lines_t message = {0};
+    esp_err_t err = nus_protocol_parse_map_lines_payload(frame->payload,
+                                                         frame->payload_len,
+                                                         &message);
+    nus_proto_status_t status = NUS_PROTO_STATUS_OK;
+
+    if (err != ESP_OK) {
+        status = NUS_PROTO_STATUS_INVALID_PAYLOAD;
+    } else if (protocol->callbacks.on_map_lines) {
+        status = protocol->callbacks.on_map_lines(&message, protocol->user_ctx);
+    } else {
+        status = NUS_PROTO_STATUS_UNSUPPORTED_CMD;
+    }
+
+    return nus_proto_auto_ack(protocol, frame, status);
+}
+
 esp_err_t nus_protocol_init(nus_protocol_t *protocol,
                             const nus_protocol_config_t *config,
                             const nus_protocol_callbacks_t *callbacks)
@@ -738,6 +765,13 @@ esp_err_t nus_protocol_parse_nav_instruction_payload(const uint8_t *payload,
     if (err != ESP_OK) {
         return err;
     }
+
+    /* route_progress_permille — optional trailing u16 (0-1000) */
+    if (offset + (uint16_t)sizeof(uint16_t) == payload_len) {
+        out->route_progress_permille = nus_proto_read_u16_le(&payload[offset]);
+        offset += sizeof(uint16_t);
+    }
+
     if (offset != payload_len) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -1013,5 +1047,45 @@ esp_err_t nus_protocol_pack_file_transfer_payload(const nus_proto_file_transfer_
         memcpy(&out[10], message->data, message->data_len);
     }
     *written = 10 + message->data_len;
+    return ESP_OK;
+}
+
+esp_err_t nus_protocol_parse_map_lines_payload(const uint8_t *payload,
+                                               uint16_t payload_len,
+                                               nus_proto_map_lines_t *out)
+{
+    if (payload == NULL || out == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (payload_len < 1) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    uint16_t offset = 0;
+    out->line_count = payload[offset++];
+
+    if (out->line_count > NUS_PROTO_MAP_MAX_LINES) {
+        out->line_count = NUS_PROTO_MAP_MAX_LINES;
+    }
+
+    for (uint8_t l = 0; l < out->line_count; l++) {
+        if (offset + 2 > payload_len) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        out->lines[l].line_type   = payload[offset++];
+        out->lines[l].point_count = payload[offset++];
+
+        uint16_t bytes_needed = (uint16_t)out->lines[l].point_count * 2u;
+        if (offset + bytes_needed > payload_len) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+        if (out->lines[l].point_count > NUS_PROTO_MAP_LINE_MAX_POINTS) {
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        out->lines[l].points = &payload[offset];
+        offset += bytes_needed;
+    }
+
     return ESP_OK;
 }
